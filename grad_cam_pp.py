@@ -1,6 +1,8 @@
+import cv2
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
+from config import train_conf
 
 
 def grad_cam_plus(model, img, layer_name, classifier_layers):
@@ -22,6 +24,7 @@ def grad_cam_plus(model, img, layer_name, classifier_layers):
     img_tensor = np.expand_dims(img, axis=0)
 
     conv_layer = model.get_layer(layer_name)
+    last_conv_layer_model = keras.Model(inputs=model.inputs, outputs=conv_layer.output)
 
     print(conv_layer.output.shape[1:])
     classifier_input = tf.keras.Input(shape=conv_layer.output.shape[1:])
@@ -34,19 +37,18 @@ def grad_cam_plus(model, img, layer_name, classifier_layers):
     with tf.GradientTape() as gtape1:
         with tf.GradientTape() as gtape2:
             with tf.GradientTape() as gtape3:
-                conv_output, predictions = classifier_model(img_tensor)
-                if category_id is None:
-                    category_id = np.argmax(predictions[0])
-                output = predictions[:, category_id]
-                conv_first_grad = gtape3.gradient(output, conv_output)
-            conv_second_grad = gtape2.gradient(conv_first_grad, conv_output)
-        conv_third_grad = gtape1.gradient(conv_second_grad, conv_output)
+                conv_output = last_conv_layer_model(img_tensor)
+                predictions= classifier_model(conv_output)
+                category_id = np.argmax(predictions[0])
+                pred_idx_value = predictions[:, category_id]
+            conv_first_grad = gtape3.gradient(pred_idx_value, conv_output)
+        conv_second_grad = gtape2.gradient(conv_first_grad, conv_output)
+    conv_third_grad = gtape1.gradient(conv_second_grad, conv_output)
 
     global_sum = np.sum(conv_output, axis=(0, 1, 2))
 
     a1 = conv_second_grad[0]
     a2 = conv_second_grad[0]*2.0 + conv_third_grad[0]*global_sum
-    a2 = np.where(a2 != 0.0, a2, 1e-10)
 
     alpha = a1/a2
     alpha_normalization_constant = np.sum(alpha, axis=(0,1))
@@ -58,9 +60,7 @@ def grad_cam_plus(model, img, layer_name, classifier_layers):
     grad_cam_map = np.sum(deep_linearization_weights*conv_output[0], axis=2)
 
     heatmap = np.maximum(grad_cam_map, 0)
-    max_heat = np.max(heatmap)
-    if max_heat == 0:
-        max_heat = 1e-10
-    heatmap /= max_heat
+    heatmap = np.clip(heatmap, 0, np.max(heatmap)) / np.max(heatmap)
+    heatmap = cv2.resize(heatmap, train_conf.img_shape)
 
     return heatmap
